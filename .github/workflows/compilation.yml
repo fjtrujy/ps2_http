@@ -1,8 +1,6 @@
 # ps2-http CI: builds all three backend variants (ee / iop / both) inside
-# the ps2dev/ps2sdk:latest container and uploads them as a single artifact
-# bundle alongside the example config. The artifact verifies compilation;
-# functional behaviour additionally depends on the host ps2sdk having the
-# lwIP 2.2.1 fixes for EE/IOP networking that this project tracks.
+# the ps2dev/ps2dev:latest umbrella image (toolchain + ps2sdk + ports) and
+# uploads them as a single artifact bundle alongside the example config.
 
 name: CI
 
@@ -16,7 +14,7 @@ on:
 jobs:
   ps2:
     runs-on: ubuntu-latest
-    container: ps2dev/ps2sdk:latest
+    container: ps2dev/ps2dev:latest
     steps:
     - uses: actions/checkout@v4
 
@@ -24,15 +22,6 @@ jobs:
       run: |
         apk update
         apk add cmake gmp mpc1 mpfr4 make git
-
-    # ps2_http depends on ps2_drivers, which is not part of the ps2dev
-    # container. Clone and install it before building.
-    - name: Build & install ps2_drivers
-      run: |
-        git clone --depth=1 https://github.com/fjtrujy/ps2_drivers.git /tmp/ps2_drivers
-        cmake -S /tmp/ps2_drivers -B /tmp/ps2_drivers/build
-        cmake --build /tmp/ps2_drivers/build -j $(getconf _NPROCESSORS_ONLN)
-        cmake --install /tmp/ps2_drivers/build
 
     - name: Configure with CMake
       run: cmake -S . -B build

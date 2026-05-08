@@ -1,6 +1,15 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.13)
 
-set(CMAKE_TOOLCHAIN_FILE $ENV{PS2SDK}/ps2dev.cmake)
+# Match ps2_drivers' convention: canonical toolchain at $PS2DEV/share/ps2dev.cmake.
+# Some local installs also expose it via a $PS2SDK/ps2dev.cmake symlink, but the
+# upstream ps2dev/ps2sdk container only ships the canonical location, so use that.
+if(NOT CMAKE_TOOLCHAIN_FILE)
+    if(DEFINED ENV{PS2DEV})
+        set(CMAKE_TOOLCHAIN_FILE "$ENV{PS2DEV}/share/ps2dev.cmake" CACHE FILEPATH "Toolchain file")
+    else()
+        message(FATAL_ERROR "PS2DEV environment variable is not set. Please set it to your PS2DEV installation path.")
+    endif()
+endif()
 
 project(ps2-http C)
 
