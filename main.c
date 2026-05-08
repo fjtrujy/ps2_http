@@ -4,18 +4,21 @@
 //
 // Requires a PS2 with a network adapter. Files are served from the directory
 // the ELF was booted from (HDD partition / USB / host: under PCSX2 / etc.).
-// This example uses DHCP on the EE-side path and a static IP on the IOP-side
-// path (the IOP stack does not support DHCP).
 //
-// Network layer:
-//   By default lwIP runs on the EE (ps2_eeip_driver, statically linked).
-//   Define USE_IOP_NETWORK below to run lwIP on the IOP via ps2ip-nm.irx +
-//   ps2ips.irx, with the EE talking to it through SIF RPC.
-// #define USE_IOP_NETWORK
+// Three build variants share this source, picked at compile time via one of:
+//   PS2HTTP_VARIANT_EE   — link only the EE-side lwIP backend
+//   PS2HTTP_VARIANT_IOP  — link only the IOP-side ps2ip-nm backend
+//   PS2HTTP_VARIANT_BOTH — link both, choose at runtime via ps2_http.cfg
+//
+// Runtime IP / backend selection lives in <boot_dir>/ps2_http.cfg. The file
+// is optional: when it's missing the defaults below take over (DHCP on EE,
+// static 192.168.1.10/24 on IOP). Note that the IOP stack does not support
+// DHCP — config.c forces static if you ask for DHCP+IOP.
 
 #define LIBCGLUE_SYS_SOCKET_ALIASES 1
 
 #include "mongoose.h"
+#include "config.h"
 
 #include <debug.h>
 #include <delaythread.h>
@@ -29,6 +32,21 @@
 
 #include <ps2_filesystem_driver.h>
 #include <ps2_network_driver.h>
+
+#if !defined(PS2HTTP_VARIANT_EE) && !defined(PS2HTTP_VARIANT_IOP) && !defined(PS2HTTP_VARIANT_BOTH)
+#  error "ps2_http: define PS2HTTP_VARIANT_EE, PS2HTTP_VARIANT_IOP, or PS2HTTP_VARIANT_BOTH"
+#endif
+
+#if defined(PS2HTTP_VARIANT_BOTH)
+#  define PS2HTTP_HAVE_EE  1
+#  define PS2HTTP_HAVE_IOP 1
+#elif defined(PS2HTTP_VARIANT_EE)
+#  define PS2HTTP_HAVE_EE  1
+#  define PS2HTTP_HAVE_IOP 0
+#else
+#  define PS2HTTP_HAVE_EE  0
+#  define PS2HTTP_HAVE_IOP 1
+#endif
 
 // Mirror status messages to the GS debug screen AND stdout. On real hardware
 // stdout goes through SIF RPC to the IOP tty; under PCSX2 it lands in the
@@ -68,10 +86,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data)
 	mg_http_serve_dir(c, hm, &opts);
 }
 
-#ifdef USE_IOP_NETWORK
-// IOP-side network: lwIP runs on the IOP (ps2ip-nm.irx). DHCP is not
-// supported on this path; configure a static IP, netmask, and gateway.
-
+#if PS2HTTP_HAVE_IOP
 static const char *iopip_event_name(enum IOPIP_PROGRESS_EVENT ev)
 {
 	switch (ev) {
@@ -90,7 +105,7 @@ static void on_iopip_progress(enum IOPIP_PROGRESS_EVENT ev, void *user)
 	dprintf("[net] %s\n", iopip_event_name(ev));
 }
 
-static int setup_network(void)
+static int setup_network_iop(const ps2http_config_t *user_cfg)
 {
 	if (init_network_IOP_driver(true) != IOPIP_INIT_STATUS_OK) {
 		dprintf("init_network_IOP_driver failed\n");
@@ -101,10 +116,9 @@ static int setup_network(void)
 	iopip_network_config_default(&cfg);
 	cfg.on_progress = on_iopip_progress;
 	cfg.timeout_seconds = 30;
-	// Adjust these for your network.
-	cfg.ip      = IOPIP_ADDR(192, 168, 1, 10);
-	cfg.netmask = IOPIP_ADDR(255, 255, 255, 0);
-	cfg.gateway = IOPIP_ADDR(192, 168, 1, 1);
+	cfg.ip      = IOPIP_ADDR(user_cfg->ip[0],      user_cfg->ip[1],      user_cfg->ip[2],      user_cfg->ip[3]);
+	cfg.netmask = IOPIP_ADDR(user_cfg->netmask[0], user_cfg->netmask[1], user_cfg->netmask[2], user_cfg->netmask[3]);
+	cfg.gateway = IOPIP_ADDR(user_cfg->gateway[0], user_cfg->gateway[1], user_cfg->gateway[2], user_cfg->gateway[3]);
 
 	if (configure_iopip_network(&cfg) != IOPIP_NET_STATUS_OK) {
 		dprintf("configure_iopip_network failed\n");
@@ -118,10 +132,9 @@ static int setup_network(void)
 	}
 	return 0;
 }
+#endif // PS2HTTP_HAVE_IOP
 
-#else
-// EE-side network: lwIP linked into the EE ELF, DHCP-enabled by default.
-
+#if PS2HTTP_HAVE_EE
 static const char *eeip_event_name(enum EEIP_PROGRESS_EVENT ev)
 {
 	switch (ev) {
@@ -143,7 +156,7 @@ static void on_eeip_progress(enum EEIP_PROGRESS_EVENT ev, void *user)
 	dprintf("[net] %s\n", eeip_event_name(ev));
 }
 
-static int setup_network(void)
+static int setup_network_ee(const ps2http_config_t *user_cfg)
 {
 	if (init_network_EE_driver(true) != EEIP_INIT_STATUS_OK) {
 		dprintf("init_network_EE_driver failed\n");
@@ -157,6 +170,13 @@ static int setup_network(void)
 	// negotiation, real DHCP server round-trips); give it more headroom.
 	cfg.timeout_seconds = 30;
 
+	if (user_cfg->ip_mode == PS2HTTP_IP_MODE_STATIC) {
+		cfg.use_dhcp = false;
+		cfg.ip      = EEIP_ADDR(user_cfg->ip[0],      user_cfg->ip[1],      user_cfg->ip[2],      user_cfg->ip[3]);
+		cfg.netmask = EEIP_ADDR(user_cfg->netmask[0], user_cfg->netmask[1], user_cfg->netmask[2], user_cfg->netmask[3]);
+		cfg.gateway = EEIP_ADDR(user_cfg->gateway[0], user_cfg->gateway[1], user_cfg->gateway[2], user_cfg->gateway[3]);
+	}
+
 	if (configure_eeip_network(&cfg) != EEIP_NET_STATUS_OK) {
 		dprintf("configure_eeip_network failed\n");
 		return -1;
@@ -169,7 +189,27 @@ static int setup_network(void)
 	}
 	return 0;
 }
+#endif // PS2HTTP_HAVE_EE
+
+static int setup_network(const ps2http_config_t *user_cfg)
+{
+	switch (user_cfg->backend) {
+#if PS2HTTP_HAVE_EE
+	case PS2HTTP_BACKEND_EE:
+		dprintf("[net] backend=EE  ip_mode=%s\n",
+				user_cfg->ip_mode == PS2HTTP_IP_MODE_DHCP ? "dhcp" : "static");
+		return setup_network_ee(user_cfg);
 #endif
+#if PS2HTTP_HAVE_IOP
+	case PS2HTTP_BACKEND_IOP:
+		dprintf("[net] backend=IOP ip_mode=static\n");
+		return setup_network_iop(user_cfg);
+#endif
+	default:
+		dprintf("[net] no backend resolved (build limitation?)\n");
+		return -1;
+	}
+}
 
 static void boot_setup(void)
 {
@@ -197,7 +237,20 @@ static void boot_setup(void)
 	}
 	dprintf("ROOT: %s\n", g_root);
 
-	if (setup_network() != 0) {
+	ps2http_config_t cfg;
+	ps2http_config_defaults(&cfg);
+	int load_rc = ps2http_config_load(&cfg, g_root);
+	if (load_rc == -1)
+		dprintf("config: ps2_http.cfg not found, using defaults\n");
+	else if (load_rc == -2)
+		dprintf("config: ps2_http.cfg parse error, using defaults\n");
+
+	if (ps2http_config_resolve(&cfg, PS2HTTP_HAVE_EE, PS2HTTP_HAVE_IOP) != 0) {
+		dprintf("config: no network backend available; halting.\n");
+		SleepThread();
+	}
+
+	if (setup_network(&cfg) != 0) {
 		dprintf("Network bring-up failed; halting.\n");
 		SleepThread();
 	}

@@ -1,0 +1,37 @@
+# ps2_http.cfg — runtime configuration for the PS2 HTTP server.
+#
+# Place this file next to the booted ELF (mass0:/PS2_HTTP/ps2_http.cfg,
+# pfs0:/PS2_HTTP/ps2_http.cfg, host:/PS2_HTTP/ps2_http.cfg, etc.). The file
+# is optional — if missing, the server falls back to backend=ee + ip_mode=dhcp.
+#
+# Format: INI-style key = value. '#' starts a comment (anywhere on the line).
+# All keys are optional; unspecified keys keep their default.
+
+# ---------------------------------------------------------------------------
+# backend = ee | iop | auto
+#
+# Picks which lwIP path drives the network stack. Only meaningful for the
+# combined `ps2-http.elf` build — `ps2-http-ee.elf` and `ps2-http-iop.elf`
+# only contain one backend each, and a mismatched value prints a warning
+# and falls back to whichever backend the ELF actually has.
+#
+# auto (default): EE if available, otherwise IOP.
+# ---------------------------------------------------------------------------
+backend = auto
+
+# ---------------------------------------------------------------------------
+# ip_mode = dhcp | static
+#
+# DHCP is only supported on the EE backend. Selecting `dhcp` together with
+# `backend = iop` prints a warning and falls back to static using the
+# ip / netmask / gateway below.
+# ---------------------------------------------------------------------------
+ip_mode = dhcp
+
+# ---------------------------------------------------------------------------
+# Static IP settings — only used when ip_mode = static (or when the IOP
+# backend forces static because DHCP isn't available there).
+# ---------------------------------------------------------------------------
+ip      = 192.168.1.10
+netmask = 255.255.255.0
+gateway = 192.168.1.1
